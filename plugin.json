@@ -1,6 +1,6 @@
 {
     "ID": "7c0f4fd6-64b7-4d4e-8d7b-7f6d4b54b0a3",
-    "Name": "🤔 Ask AI",
+    "Name": "Ask AI",
     "Description": "Ollama-powered agent with Tavily search tool",
     "Author": "Bowie",
     "Version": "0.1.2",

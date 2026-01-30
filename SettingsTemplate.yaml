@@ -1,55 +1,55 @@
 body:
-  - type: input
-    attributes:
-      name: model
-      label: "Ollama Model:"
-      defaultValue: "qwen3:4b"
-      description: "The LLM to be used. Example: qwen3:4b"
-  - type: input
-    attributes:
-      name: ollama_host
-      label: "Ollama Host (optional):"
-      defaultValue: ""
-      description: "Override Ollama host, e.g. http://localhost:11434 or WSL IP."
-  - type: input
-    attributes:
-      name: tavily_api_key
-      label: "Tavily API Key:"
-      defaultValue: ""
-      description: "Required for web search."
-  - type: input
-    attributes:
-      name: max_results
-      label: "Max Results (1-3):"
-      defaultValue: "3"
-      description: "Number of search results to include."
-  - type: checkbox
-    attributes:
-      name: enable_web_search
-      label: "Enable web search by default:"
-      description: "If disabled, use 'net ' prefix to trigger web search."
-      defaultValue: 'false'
-  - type: checkbox
-    attributes:
-      name: show_thinking
-      label: "Show thinking content:"
-      description: "If enabled, keep <think>...</think> in output."
-      defaultValue: 'false'
-  - type: checkbox
-    attributes:
-      name: use_system_proxy
-      label: "Use system proxy for Ollama:"
-      description: "Enable only if you must access Ollama through a proxy. WSL Ollama + system proxy can slow requests."
-      defaultValue: 'false'
-  - type: input
-    attributes:
-      name: response_preview_length
-      label: "Response preview length:"
-      defaultValue: "160"
-      description: "Characters shown in the result title."
-  - type: input
-    attributes:
-      name: prompt_stop
-      label: "Prompt Stop:"
-      defaultValue: ";;"
-      description: "Only run when input ends with this token."
+    - type: input
+      attributes:
+          name: model
+          label: "Ollama Model:"
+          defaultValue: "qwen3:4b"
+          description: "The LLM to be used. Example: qwen3:4b"
+    - type: input
+      attributes:
+          name: ollama_host
+          label: "Ollama Host (optional):"
+          defaultValue: "http://localhost:11434"
+          description: "Override Ollama host, e.g. http://localhost:11434 or WSL IP(127.0.0.1 also could work)."
+    - type: input
+      attributes:
+          name: tavily_api_key
+          label: "Tavily API Key:"
+          defaultValue: ""
+          description: "Required for web search."
+    - type: input
+      attributes:
+          name: max_results
+          label: "Max Results (1-3):"
+          defaultValue: "3"
+          description: "Number of search results to include."
+    - type: checkbox
+      attributes:
+          name: enable_web_search
+          label: "Enable web search by default:"
+          description: "If disabled, use 'net ' prefix to trigger web search."
+          defaultValue: "true"
+    - type: checkbox
+      attributes:
+          name: show_thinking
+          label: "Show thinking content:"
+          description: "If enabled, keep <think>...</think> in output."
+          defaultValue: "true"
+    - type: checkbox
+      attributes:
+          name: use_system_proxy
+          label: "Use system proxy for Ollama:"
+          description: "Enable only if you must access Ollama through a proxy. WSL Ollama + system proxy can slow requests."
+          defaultValue: "false"
+    - type: input
+      attributes:
+          name: response_preview_length
+          label: "Response preview length:"
+          defaultValue: "160"
+          description: "Characters shown in the result title."
+    - type: input
+      attributes:
+          name: prompt_stop
+          label: "Prompt Stop:"
+          defaultValue: ";;"
+          description: "Only run when input ends with this token."

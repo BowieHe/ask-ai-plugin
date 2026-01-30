@@ -5,7 +5,11 @@ import tempfile
 import time
 from typing import Any, Dict, List
 
-LIB_DIR = os.path.join(os.path.dirname(__file__), "lib")
+PLUGIN_DIR = os.path.dirname(__file__)
+PLUGIN_NAME = os.path.basename(PLUGIN_DIR)
+PLUGIN_ID = "7c0f4fd6-64b7-4d4e-8d7b-7f6d4b54b0a3"
+
+LIB_DIR = os.path.join(PLUGIN_DIR, "lib")
 if os.path.isdir(LIB_DIR):
     sys.path.insert(0, LIB_DIR)
 
@@ -28,7 +32,7 @@ else:
     REQUESTS_IMPORT_ERROR = ""
 
 
-CONFIG_FILE = os.path.join(os.path.dirname(__file__), "config.json")
+CONFIG_FILE = os.path.join(PLUGIN_DIR, "config.json")
 
 
 DEFAULT_CONFIG: Dict[str, Any] = {
@@ -156,16 +160,45 @@ def normalize_host(host: str) -> str:
     return host
 
 
+def load_settings_fallback() -> Dict[str, Any]:
+    appdata = os.getenv("APPDATA")
+    if not appdata:
+        return {}
+    candidates = [
+        os.path.join(
+            appdata, "FlowLauncher", "Settings", "Plugins", PLUGIN_NAME, "settings.json"
+        ),
+        os.path.join(
+            appdata, "FlowLauncher", "Settings", "Plugins", "Ask AI", "settings.json"
+        ),
+        os.path.join(
+            appdata, "FlowLauncher", "Settings", "Plugins", PLUGIN_ID, "settings.json"
+        ),
+    ]
+    for path in candidates:
+        if os.path.exists(path):
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                if isinstance(data, dict):
+                    return data
+            except Exception:
+                continue
+    return {}
+
+
 class OllamaWebAgent(FlowLauncher):
     def _settings_value(self, key: str, fallback: Any) -> Any:
-        settings = getattr(self, "settings", {}) or {}
-        value = settings.get(key, "")
+        value = self._settings.get(key, "")
         if value is None or str(value).strip() == "":
             return fallback
         return value
 
     def _load_runtime_config(self) -> Dict[str, Any]:
         cfg = load_config()
+        self._settings = getattr(self, "settings", {}) or {}
+        if not self._settings:
+            self._settings = load_settings_fallback()
         cfg["model"] = self._settings_value("model", cfg["model"])
         cfg["tavily_api_key"] = self._settings_value(
             "tavily_api_key", cfg["tavily_api_key"]
@@ -243,6 +276,7 @@ class OllamaWebAgent(FlowLauncher):
             ollama.Client(host=host, trust_env=trust_env) if host else ollama.Client()
         )
         tools = build_tool_schema()
+        last_search_summary = ""
         messages = [
             {
                 "role": "system",
@@ -265,8 +299,12 @@ class OllamaWebAgent(FlowLauncher):
             if not tool_calls:
                 content = message.get("content", "")
                 if to_bool(cfg.get("show_thinking")):
-                    return content
-                return strip_thinking(content)
+                    answer = content
+                else:
+                    answer = strip_thinking(content)
+                if last_search_summary:
+                    answer = f"{answer}\n\n[Search Results]\n{last_search_summary}"
+                return answer
 
             for call in tool_calls:
                 fn = call.get("function", {})
@@ -288,6 +326,7 @@ class OllamaWebAgent(FlowLauncher):
                             max_results=int(max_results),
                             timeout=int(cfg["tavily_timeout"]),
                         )
+                        last_search_summary = tool_content
                     except Exception:
                         tool_content = "Web search failed. Answer without web search."
 
@@ -369,7 +408,7 @@ class OllamaWebAgent(FlowLauncher):
             if len(preview) <= preview_len
             else preview[:preview_len].rstrip() + "..."
         )
-        subtitle = f"{elapsed:.1f}s | Press Enter to open full response"
+        subtitle = self._build_subtitle(elapsed, use_tools, query)
         return [
             {
                 "Title": title,
@@ -400,6 +439,22 @@ class OllamaWebAgent(FlowLauncher):
         except Exception:
             pass
         return True
+
+    def _build_subtitle(self, elapsed: float, use_tools: bool, query: str) -> str:
+        label = ""
+        if use_tools:
+            label = "已联网搜索" if self._is_chinese(query) else "Web search used"
+        parts = [f"{elapsed:.1f}s"]
+        if label:
+            parts.append(label)
+        parts.append("Press Enter to open full response")
+        return " | ".join(parts)
+
+    def _is_chinese(self, text: str) -> bool:
+        for ch in text:
+            if "\u4e00" <= ch <= "\u9fff":
+                return True
+        return False
 
 
 if __name__ == "__main__":
