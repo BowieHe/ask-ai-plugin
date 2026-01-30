@@ -1,14 +1,4 @@
 body:
-    - type: select
-      attributes:
-          name: provider
-          label: "AI Provider:"
-          defaultValue: "ollama"
-          description: "Choose your AI provider"
-          options:
-              - "ollama"
-              - "openai"
-              - "deepseek"
     - type: input
       attributes:
           name: model
@@ -18,15 +8,15 @@ body:
     - type: input
       attributes:
           name: api_base_url
-          label: "API Base URL (optional):"
+          label: "API Base URL:"
           defaultValue: "http://localhost:11434"
-          description: "Provider endpoint. Default: http://localhost:11434 (Ollama), https://api.openai.com (OpenAI), https://api.deepseek.com (DeepSeek)"
+          description: "API endpoint. Ollama: http://localhost:11434 | OpenAI: https://api.openai.com | DeepSeek: https://api.deepseek.com"
     - type: input
       attributes:
           name: api_key
-          label: "API Key (for OpenAI/DeepSeek):"
+          label: "API Key:"
           defaultValue: ""
-          description: "Required for OpenAI and DeepSeek. Not needed for Ollama."
+          description: "Required for cloud providers (OpenAI, DeepSeek, etc.). Leave empty for local Ollama."
     - type: input
       attributes:
           name: tavily_api_key
