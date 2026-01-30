@@ -24,13 +24,11 @@ jobs:
       
       - name: Create plugin package
         run: |
-          mkdir -p dist
-          cp -r . dist/Ask-AI
-          cd dist/Ask-AI
-          # Remove unnecessary files
-          rm -rf .git .github .gitignore dist
+          mkdir -p dist/Ask-AI
+          # Copy necessary files, excluding .git, .github, dist, etc.
+          rsync -av --exclude='.git' --exclude='.github' --exclude='dist' --exclude='.gitignore' --exclude='*.md' --exclude='test_*.py' --exclude='__pycache__' . dist/Ask-AI/
           # Create zip
-          cd ..
+          cd dist
           zip -r Ask-AI.zip Ask-AI
       
       - name: Get version from tag
