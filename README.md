@@ -21,7 +21,7 @@ Ask AI is a Flow Launcher plugin that talks to a local Ollama model and can deci
 
 ## Configuration
 In Flow Launcher settings for this plugin:
-- **Ollama Model**: e.g. `qwen2.5-coder:14b`
+- **Ollama Model**: e.g. `qwen3:4b`
 - **Ollama Host** (optional): `http://<host>:11434`
 - **Tavily API Key**: your Tavily key
 - **Max Results**: 1-3

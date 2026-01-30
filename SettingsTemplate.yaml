@@ -3,8 +3,8 @@ body:
     attributes:
       name: model
       label: "Ollama Model:"
-      defaultValue: "qwen2.5-coder:14b"
-      description: "The LLM to be used. Example: qwen2.5-coder:14b"
+      defaultValue: "qwen3:4b"
+      description: "The LLM to be used. Example: qwen3:4b"
   - type: input
     attributes:
       name: ollama_host
@@ -39,7 +39,7 @@ body:
     attributes:
       name: use_system_proxy
       label: "Use system proxy for Ollama:"
-      description: "Enable only if you must access Ollama through a proxy."
+      description: "Enable only if you must access Ollama through a proxy. WSL Ollama + system proxy can slow requests."
       defaultValue: 'false'
   - type: input
     attributes:
