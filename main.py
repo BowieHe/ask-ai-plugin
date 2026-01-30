@@ -16,14 +16,6 @@ if os.path.isdir(LIB_DIR):
 from flowlauncher import FlowLauncher
 
 try:
-    import ollama
-except Exception as exc:
-    ollama = None
-    OLLAMA_IMPORT_ERROR = str(exc)
-else:
-    OLLAMA_IMPORT_ERROR = ""
-
-try:
     import requests
 except Exception as exc:
     requests = None
@@ -36,35 +28,27 @@ CONFIG_FILE = os.path.join(PLUGIN_DIR, "config.json")
 
 
 DEFAULT_CONFIG: Dict[str, Any] = {
+    "provider": "ollama",
     "model": "qwen3:4b",
+    "api_base_url": "http://localhost:11434",
+    "api_key": "",
     "tavily_api_key": "",
-    "tavily_timeout": 8,
+    "tavily_timeout": 20,
     "max_results": 3,
-    "ollama_host": "http://localhost:11434",
     "prompt_stop": ";;",
     "enable_web_search": False,
-    "show_thinking": False,
-    "response_preview_length": 160,
+    "enable_thinking": True,
     "use_system_proxy": False,
+    "response_preview_length": 160,
 }
 
 
-def load_config() -> Dict[str, Any]:
-    if not os.path.exists(CONFIG_FILE):
-        return DEFAULT_CONFIG.copy()
-    try:
-        with open(CONFIG_FILE, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        merged = DEFAULT_CONFIG.copy()
-        merged.update({k: v for k, v in data.items() if k in DEFAULT_CONFIG})
-        return merged
-    except Exception:
-        return DEFAULT_CONFIG.copy()
-
-
-def save_config(cfg: Dict[str, Any]) -> None:
-    with open(CONFIG_FILE, "w", encoding="utf-8") as f:
-        json.dump(cfg, f, indent=2, ensure_ascii=False)
+def get_config_value(settings: Dict[str, Any], key: str, default: Any) -> Any:
+    """Get config value from settings with fallback to default"""
+    value = settings.get(key)
+    if value is None or (isinstance(value, str) and value.strip() == ""):
+        return default
+    return value
 
 
 def build_tool_schema() -> List[Dict[str, Any]]:
@@ -125,18 +109,208 @@ def format_result(title: str, subtitle: str, icon: str = "icon.png") -> Dict[str
     return {"Title": title, "SubTitle": subtitle, "IcoPath": icon}
 
 
-def strip_thinking(text: str) -> str:
-    if not text:
+def extract_thinking(response: Dict[str, Any], provider: str = "ollama") -> str:
+    """Extract thinking/reasoning content from response across different providers"""
+    if not isinstance(response, dict):
         return ""
-    start_tag = "<think>"
-    end_tag = "</think>"
-    while True:
-        start = text.find(start_tag)
-        end = text.find(end_tag)
-        if start == -1 or end == -1 or end < start:
-            break
-        text = text[:start] + text[end + len(end_tag) :]
-    return text.strip()
+    
+    if provider == "ollama":
+        # Ollama native format: response.message.thinking
+        message = response.get("message", {})
+        if isinstance(message, dict):
+            thinking = message.get("thinking", "")
+            if thinking:
+                return thinking
+        # Fallback
+        return response.get("thinking", "")
+    
+    else:
+        # OpenAI compatible format: response.choices[0].message.reasoning
+        choices = response.get("choices", [])
+        if choices and len(choices) > 0:
+            message = choices[0].get("message", {})
+            # Check for reasoning field (OpenAI o1/o3, DeepSeek)
+            reasoning = message.get("reasoning", "")
+            if reasoning:
+                return reasoning
+            # Some providers use reasoning_content
+            reasoning_content = message.get("reasoning_content", "")
+            if reasoning_content:
+                return reasoning_content
+    
+    return ""
+
+
+class ChatProvider:
+    """Unified chat provider supporting multiple APIs"""
+    
+    # Provider configurations
+    PROVIDERS = {
+        "ollama": {
+            "default_base_url": "http://localhost:11434",
+            "endpoint": "/api/chat",
+            "requires_api_key": False,
+        },
+        "openai": {
+            "default_base_url": "https://api.openai.com",
+            "endpoint": "/v1/chat/completions",
+            "requires_api_key": True,
+        },
+        "deepseek": {
+            "default_base_url": "https://api.deepseek.com",
+            "endpoint": "/v1/chat/completions",
+            "requires_api_key": True,
+        },
+    }
+    
+    def __init__(
+        self,
+        provider: str,
+        model: str,
+        base_url: str = "",
+        api_key: str = "",
+        timeout: int = 60,
+        use_proxy: bool = False,
+    ):
+        self.provider = provider.lower()
+        self.model = model
+        self.timeout = timeout
+        self.use_proxy = use_proxy
+        
+        if self.provider not in self.PROVIDERS:
+            raise ValueError(f"Unknown provider: {provider}. Supported: {list(self.PROVIDERS.keys())}")
+        
+        provider_config = self.PROVIDERS[self.provider]
+        
+        # Set base URL
+        self.base_url = (base_url or provider_config["default_base_url"]).rstrip("/")
+        self.endpoint = provider_config["endpoint"]
+        self.api_key = api_key
+        
+        # Validate API key if required
+        if provider_config["requires_api_key"] and not self.api_key:
+            raise ValueError(f"{provider} requires an API key")
+    
+    def chat(
+        self,
+        messages: List[Dict[str, Any]],
+        tools: List[Dict[str, Any]] = None,
+        thinking: bool = False,
+        stream: bool = False,
+    ) -> Dict[str, Any]:
+        """Send chat request to provider"""
+        if requests is None:
+            raise RuntimeError(f"requests not available: {REQUESTS_IMPORT_ERROR}")
+        
+        if self.provider == "ollama":
+            return self._chat_ollama(messages, tools, thinking, stream)
+        else:
+            return self._chat_openai_compatible(messages, tools, thinking, stream)
+    
+    def _chat_ollama(self, messages, tools, thinking, stream) -> Dict[str, Any]:
+        """Ollama native API: /api/chat"""
+        url = f"{self.base_url}{self.endpoint}"
+        
+        payload = {
+            "model": self.model,
+            "messages": messages,
+            "stream": stream,
+        }
+        
+        if tools:
+            payload["tools"] = tools
+        
+        if thinking:
+            # Ollama native think parameter
+            payload["think"] = True
+        
+        headers = {"Content-Type": "application/json"}
+        
+        try:
+            # Create session to handle proxy settings
+            session = requests.Session()
+            session.trust_env = self.use_proxy
+            
+            response = session.post(
+                url, 
+                json=payload, 
+                headers=headers, 
+                timeout=self.timeout
+            )
+            response.raise_for_status()
+            return response.json()
+        except requests.exceptions.RequestException as e:
+            raise RuntimeError(f"Ollama request failed: {str(e)}")
+    
+    def _chat_openai_compatible(self, messages, tools, thinking, stream) -> Dict[str, Any]:
+        """OpenAI-compatible API: /v1/chat/completions"""
+        url = f"{self.base_url}{self.endpoint}"
+        
+        payload = {
+            "model": self.model,
+            "messages": messages,
+            "stream": stream,
+        }
+        
+        if tools:
+            payload["tools"] = tools
+        
+        # For reasoning models, use reasoning_effort (DeepSeek, OpenAI o1)
+        if thinking:
+            if self.provider in ["deepseek", "openai"]:
+                # DeepSeek and OpenAI o1/o3 support reasoning_effort
+                payload["reasoning_effort"] = "high"
+        
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {self.api_key}",
+        }
+        
+        try:
+            # Create session to handle proxy settings
+            session = requests.Session()
+            session.trust_env = self.use_proxy
+            
+            response = session.post(
+                url, 
+                json=payload, 
+                headers=headers, 
+                timeout=self.timeout
+            )
+            response.raise_for_status()
+            openai_response = response.json()
+            # Normalize to Ollama-like format for consistency
+            return self._normalize_openai_response(openai_response)
+        except requests.exceptions.RequestException as e:
+            raise RuntimeError(f"{self.provider.title()} request failed: {str(e)}")
+    
+    def _normalize_openai_response(self, response: Dict[str, Any]) -> Dict[str, Any]:
+        """Convert OpenAI format to Ollama-like format for consistency"""
+        choices = response.get("choices", [])
+        if not choices:
+            return {"message": {"role": "assistant", "content": ""}}
+        
+        choice = choices[0]
+        message = choice.get("message", {})
+        
+        normalized = {
+            "message": {
+                "role": message.get("role", "assistant"),
+                "content": message.get("content", ""),
+            }
+        }
+        
+        # Handle tool calls
+        if "tool_calls" in message and message["tool_calls"]:
+            normalized["message"]["tool_calls"] = message["tool_calls"]
+        
+        # Handle reasoning/thinking
+        if "reasoning" in message:
+            normalized["message"]["thinking"] = message["reasoning"]
+        elif "reasoning_content" in message:
+            normalized["message"]["thinking"] = message["reasoning_content"]
+        
+        return normalized
 
 
 def to_bool(value: Any) -> bool:
@@ -145,19 +319,6 @@ def to_bool(value: Any) -> bool:
     if value is None:
         return False
     return str(value).strip().lower() in {"1", "true", "yes", "on"}
-
-
-def normalize_host(host: str) -> str:
-    if not host:
-        return host
-    lowered = host.lower()
-    if lowered.startswith("http://localhost"):
-        return "http://127.0.0.1" + host[len("http://localhost") :]
-    if lowered.startswith("https://localhost"):
-        return "https://127.0.0.1" + host[len("https://localhost") :]
-    if lowered.startswith("localhost"):
-        return "127.0.0.1" + host[len("localhost") :]
-    return host
 
 
 def load_settings_fallback() -> Dict[str, Any]:
@@ -188,124 +349,121 @@ def load_settings_fallback() -> Dict[str, Any]:
 
 
 class OllamaWebAgent(FlowLauncher):
-    def _settings_value(self, key: str, fallback: Any) -> Any:
-        value = self._settings.get(key, "")
-        if value is None or str(value).strip() == "":
-            return fallback
-        return value
-
     def _load_runtime_config(self) -> Dict[str, Any]:
-        cfg = load_config()
-        self._settings = getattr(self, "settings", {}) or {}
-        if not self._settings:
-            self._settings = load_settings_fallback()
-        cfg["model"] = self._settings_value("model", cfg["model"])
-        cfg["tavily_api_key"] = self._settings_value(
-            "tavily_api_key", cfg["tavily_api_key"]
-        )
-        cfg["ollama_host"] = self._settings_value("ollama_host", cfg["ollama_host"])
-        cfg["max_results"] = self._settings_value("max_results", cfg["max_results"])
-        cfg["prompt_stop"] = self._settings_value("prompt_stop", cfg["prompt_stop"])
-        cfg["enable_web_search"] = self._settings_value(
-            "enable_web_search", cfg["enable_web_search"]
-        )
-        cfg["show_thinking"] = self._settings_value(
-            "show_thinking", cfg["show_thinking"]
-        )
-        cfg["use_system_proxy"] = self._settings_value(
-            "use_system_proxy", cfg["use_system_proxy"]
-        )
-        cfg["response_preview_length"] = self._settings_value(
-            "response_preview_length", cfg["response_preview_length"]
-        )
+        """Load configuration from settings with defaults"""
+        settings = getattr(self, "settings", {}) or load_settings_fallback()
+        
+        cfg = {
+            "provider": get_config_value(settings, "provider", DEFAULT_CONFIG["provider"]),
+            "model": get_config_value(settings, "model", DEFAULT_CONFIG["model"]),
+            "api_base_url": get_config_value(settings, "api_base_url", DEFAULT_CONFIG["api_base_url"]),
+            "api_key": get_config_value(settings, "api_key", DEFAULT_CONFIG["api_key"]),
+            "tavily_api_key": get_config_value(settings, "tavily_api_key", DEFAULT_CONFIG["tavily_api_key"]),
+            "tavily_timeout": DEFAULT_CONFIG["tavily_timeout"],
+            "max_results": get_config_value(settings, "max_results", DEFAULT_CONFIG["max_results"]),
+            "prompt_stop": get_config_value(settings, "prompt_stop", DEFAULT_CONFIG["prompt_stop"]),
+            "enable_web_search": get_config_value(settings, "enable_web_search", DEFAULT_CONFIG["enable_web_search"]),
+            "enable_thinking": get_config_value(settings, "enable_thinking", DEFAULT_CONFIG["enable_thinking"]),
+            "use_system_proxy": get_config_value(settings, "use_system_proxy", DEFAULT_CONFIG["use_system_proxy"]),
+            "response_preview_length": get_config_value(settings, "response_preview_length", DEFAULT_CONFIG["response_preview_length"]),
+        }
+        
+        # Backward compatibility
+        # Use old show_thinking/thinking_mode if enable_thinking not set
+        if "enable_thinking" not in settings or settings.get("enable_thinking") is None:
+            show_thinking = get_config_value(settings, "show_thinking", True)
+            thinking_mode = get_config_value(settings, "thinking_mode", True)
+            cfg["enable_thinking"] = show_thinking and thinking_mode
+        
+        # Use ollama_host if set
+        ollama_host = get_config_value(settings, "ollama_host", "")
+        if ollama_host and cfg["provider"] == "ollama":
+            cfg["api_base_url"] = ollama_host
+        
+        # Validate and clamp values
         try:
             cfg["max_results"] = max(1, min(3, int(cfg["max_results"])))
-        except Exception:
+        except (ValueError, TypeError):
             cfg["max_results"] = DEFAULT_CONFIG["max_results"]
+        
         try:
-            cfg["response_preview_length"] = max(
-                40, min(500, int(cfg["response_preview_length"]))
-            )
-        except Exception:
+            cfg["response_preview_length"] = max(40, min(500, int(cfg["response_preview_length"])))
+        except (ValueError, TypeError):
             cfg["response_preview_length"] = DEFAULT_CONFIG["response_preview_length"]
+        
         return cfg
-
-    def _handle_config(self, args: List[str]) -> List[Dict[str, Any]]:
-        cfg = load_config()
-        if len(args) == 0 or args[0] in {"show", "list"}:
-            return [
-                format_result(
-                    "Current config",
-                    f"model={cfg['model']} | tavily_api_key={'set' if cfg['tavily_api_key'] else 'empty'} | max_results={cfg['max_results']}",
-                )
-            ]
-
-        if args[0] == "model" and len(args) >= 2:
-            cfg["model"] = " ".join(args[1:]).strip()
-            save_config(cfg)
-            return [format_result("Saved model", cfg["model"])]
-
-        if args[0] == "tavily" and len(args) >= 2:
-            cfg["tavily_api_key"] = " ".join(args[1:]).strip()
-            save_config(cfg)
-            return [format_result("Saved Tavily API key", "OK")]
-
-        if args[0] == "max_results" and len(args) >= 2:
-            try:
-                cfg["max_results"] = max(1, min(3, int(args[1])))
-                save_config(cfg)
-                return [format_result("Saved max_results", str(cfg["max_results"]))]
-            except ValueError:
-                return [format_result("Invalid max_results", "Use 1-3")]
-
-        return [
-            format_result(
-                "Config usage",
-                "ai config model <name> | ai config tavily <key> | ai config max_results 1-3",
-            )
-        ]
 
     def _chat_with_tools(
         self, prompt: str, cfg: Dict[str, Any], use_tools: bool
     ) -> str:
-        if ollama is None:
-            raise RuntimeError(f"ollama not available: {OLLAMA_IMPORT_ERROR}")
-        host = normalize_host(str(cfg.get("ollama_host", "")).strip())
-        trust_env = to_bool(cfg.get("use_system_proxy"))
-        client = (
-            ollama.Client(host=host, trust_env=trust_env) if host else ollama.Client()
-        )
-        tools = build_tool_schema()
+        if requests is None:
+            raise RuntimeError(f"requests not available: {REQUESTS_IMPORT_ERROR}")
+        
+        # Create chat provider
+        try:
+            provider = ChatProvider(
+                provider=cfg.get("provider", "ollama"),
+                model=cfg.get("model"),
+                base_url=cfg.get("api_base_url", ""),
+                api_key=cfg.get("api_key", ""),
+                use_proxy=to_bool(cfg.get("use_system_proxy")),
+            )
+        except ValueError as e:
+            raise RuntimeError(str(e))
+        
+        tools = build_tool_schema() if use_tools else None
         last_search_summary = ""
+        
+        # Build system prompt
+        system_content = "You are a helpful assistant."
+        if use_tools:
+            system_content += " You have access to a web search tool. Use it to find current information when needed."
+        
         messages = [
             {
                 "role": "system",
-                "content": "You are a helpful assistant.",
+                "content": system_content,
             },
             {"role": "user", "content": prompt},
         ]
 
-        if not use_tools:
-            response = client.chat(model=cfg["model"], messages=messages)
-            content = response.get("message", {}).get("content", "")
-            if to_bool(cfg.get("show_thinking")):
-                return content
-            return strip_thinking(content)
+        thinking_enabled = to_bool(cfg.get("enable_thinking"))
+        provider_name = cfg.get("provider", "ollama")
 
-        for _ in range(2):
-            response = client.chat(model=cfg["model"], messages=messages, tools=tools)
+        if not use_tools:
+            response = provider.chat(messages=messages, thinking=thinking_enabled)
+            content = response.get("message", {}).get("content", "")
+            thinking = extract_thinking(response, provider_name)
+            if thinking_enabled and thinking:
+                return f"[thinking]\n{thinking}\n\n[answer]\n{content}".strip()
+            return content
+
+        # Tool calling loop (increased to 3 iterations)
+        for iteration in range(3):
+            response = provider.chat(
+                messages=messages,
+                tools=tools,
+                thinking=thinking_enabled
+            )
             message = response.get("message", {})
             tool_calls = message.get("tool_calls") or []
+            
             if not tool_calls:
+                # No tool calls - return answer with search results if available
                 content = message.get("content", "")
-                if to_bool(cfg.get("show_thinking")):
-                    answer = content
+                thinking = extract_thinking(response, provider_name)
+                
+                if thinking_enabled and thinking:
+                    answer = f"[thinking]\n{thinking}\n\n[answer]\n{content}".strip()
                 else:
-                    answer = strip_thinking(content)
+                    answer = content
+                
+                # Always append search results if we have them
                 if last_search_summary:
-                    answer = f"{answer}\n\n[Search Results]\n{last_search_summary}"
+                    answer = f"{answer}\n\n[Web Search Results]\n{last_search_summary}"
                 return answer
 
+            # Process tool calls
             for call in tool_calls:
                 fn = call.get("function", {})
                 if fn.get("name") != "search_web":
@@ -327,27 +485,23 @@ class OllamaWebAgent(FlowLauncher):
                             timeout=int(cfg["tavily_timeout"]),
                         )
                         last_search_summary = tool_content
-                    except Exception:
-                        tool_content = "Web search failed. Answer without web search."
+                    except Exception as e:
+                        tool_content = f"Web search failed: {str(e)}"
 
                 messages.append(
                     {
                         "role": "tool",
-                        "name": "search_web",
                         "content": tool_content,
                     }
                 )
 
-        return "I could not complete the tool call, please try again."
+        # If we exit the loop without returning
+        return "Could not complete the request. Please try again."
 
     def query(self, param: str = "") -> List[Dict[str, Any]]:
         query = (param or "").strip()
         if not query:
             return [format_result("Type a question", "Example: ai 什么是函数调用")]
-
-        parts = query.split()
-        if parts[0].lower() == "config":
-            return self._handle_config(parts[1:])
 
         cfg = self._load_runtime_config()
         use_tools = to_bool(cfg.get("enable_web_search"))
@@ -376,10 +530,10 @@ class OllamaWebAgent(FlowLauncher):
                     "Set it in Flow Launcher plugin settings",
                 )
             ]
-        if ollama is None:
+        if requests is None:
             return [
                 format_result(
-                    "Missing dependency: ollama",
+                    "Missing dependency: requests",
                     "Install in Flow Python: python -m pip install -r requirements.txt",
                 )
             ]
@@ -389,16 +543,39 @@ class OllamaWebAgent(FlowLauncher):
             answer = self._chat_with_tools(query, cfg, use_tools=use_tools)
         except Exception as exc:
             message = str(exc).strip()
-            if "model" in message and "not" in message and "found" in message:
+            provider = cfg.get("provider", "ollama")
+            
+            if "model" in message.lower() and "not" in message.lower() and "found" in message.lower():
+                if provider == "ollama":
+                    return [
+                        format_result(
+                            "Model not found",
+                            f"Run: ollama pull {model}",
+                        )
+                    ]
+                else:
+                    return [
+                        format_result(
+                            "Model not found",
+                            f"Check model name for {provider}",
+                        )
+                    ]
+            
+            if "api key" in message.lower() or "requires" in message.lower():
                 return [
                     format_result(
-                        "Model not found",
-                        f"Check model name and run: ollama pull {model}",
+                        f"{provider.title()} API key required",
+                        f"Set API key in plugin settings",
                     )
                 ]
+            
             if not message:
-                message = "Is Ollama running on localhost?"
-            return [format_result("Ollama error", message[:200])]
+                if provider == "ollama":
+                    message = "Is Ollama running on localhost?"
+                else:
+                    message = f"Cannot connect to {provider}"
+            
+            return [format_result(f"{provider.title()} error", message[:200])]
 
         elapsed = time.time() - start
         preview_len = int(cfg.get("response_preview_length", 160))
