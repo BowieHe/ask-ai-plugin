@@ -1,0 +1,31 @@
+body:
+  - type: input
+    attributes:
+      name: model
+      label: "Ollama Model:"
+      defaultValue: "qwen2.5-coder:14b"
+      description: "The LLM to be used. Example: qwen2.5-coder:14b"
+  - type: input
+    attributes:
+      name: ollama_host
+      label: "Ollama Host (optional):"
+      defaultValue: ""
+      description: "Override Ollama host, e.g. http://localhost:11434 or WSL IP."
+  - type: input
+    attributes:
+      name: tavily_api_key
+      label: "Tavily API Key:"
+      defaultValue: ""
+      description: "Required for web search."
+  - type: input
+    attributes:
+      name: max_results
+      label: "Max Results (1-3):"
+      defaultValue: "3"
+      description: "Number of search results to include."
+  - type: input
+    attributes:
+      name: prompt_stop
+      label: "Prompt Stop:"
+      defaultValue: ";;"
+      description: "Only run when input ends with this token."

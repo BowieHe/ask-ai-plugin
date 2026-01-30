@@ -1,22 +1,42 @@
 import json
 import os
+import sys
 import time
 from typing import Any, Dict, List
 
-import ollama
-import requests
+LIB_DIR = os.path.join(os.path.dirname(__file__), "lib")
+if os.path.isdir(LIB_DIR):
+    sys.path.insert(0, LIB_DIR)
+
 from flowlauncher import FlowLauncher
+
+try:
+    import ollama
+except Exception as exc:
+    ollama = None
+    OLLAMA_IMPORT_ERROR = str(exc)
+else:
+    OLLAMA_IMPORT_ERROR = ""
+
+try:
+    import requests
+except Exception as exc:
+    requests = None
+    REQUESTS_IMPORT_ERROR = str(exc)
+else:
+    REQUESTS_IMPORT_ERROR = ""
 
 
 CONFIG_FILE = os.path.join(os.path.dirname(__file__), "config.json")
 
 
 DEFAULT_CONFIG: Dict[str, Any] = {
-    "model": "qwen2.5-coder:14b",
+    "model": "qwen3:4b",
     "tavily_api_key": "",
     "tavily_timeout": 8,
     "max_results": 3,
-    "ollama_host": "",
+    "ollama_host": "http://localhost:11434",
+    "prompt_stop": ";;",
 }
 
 
@@ -62,6 +82,8 @@ def build_tool_schema() -> List[Dict[str, Any]]:
 
 
 def tavily_search(query: str, api_key: str, max_results: int, timeout: int) -> str:
+    if requests is None:
+        raise RuntimeError(f"requests not available: {REQUESTS_IMPORT_ERROR}")
     url = "https://api.tavily.com/search"
     payload = {
         "api_key": api_key,
@@ -94,6 +116,20 @@ def format_result(title: str, subtitle: str, icon: str = "icon.png") -> Dict[str
     return {"Title": title, "SubTitle": subtitle, "IcoPath": icon}
 
 
+def strip_thinking(text: str) -> str:
+    if not text:
+        return ""
+    start_tag = "<think>"
+    end_tag = "</think>"
+    while True:
+        start = text.find(start_tag)
+        end = text.find(end_tag)
+        if start == -1 or end == -1 or end < start:
+            break
+        text = text[:start] + text[end + len(end_tag) :]
+    return text.strip()
+
+
 class OllamaWebAgent(FlowLauncher):
     def _settings_value(self, key: str, fallback: Any) -> Any:
         settings = getattr(self, "settings", {}) or {}
@@ -110,6 +146,7 @@ class OllamaWebAgent(FlowLauncher):
         )
         cfg["ollama_host"] = self._settings_value("ollama_host", cfg["ollama_host"])
         cfg["max_results"] = self._settings_value("max_results", cfg["max_results"])
+        cfg["prompt_stop"] = self._settings_value("prompt_stop", cfg["prompt_stop"])
         try:
             cfg["max_results"] = max(1, min(3, int(cfg["max_results"])))
         except Exception:
@@ -152,6 +189,8 @@ class OllamaWebAgent(FlowLauncher):
         ]
 
     def _chat_with_tools(self, prompt: str, cfg: Dict[str, Any]) -> str:
+        if ollama is None:
+            raise RuntimeError(f"ollama not available: {OLLAMA_IMPORT_ERROR}")
         host = str(cfg.get("ollama_host", "")).strip()
         client = ollama.Client(host=host) if host else ollama.Client()
         tools = build_tool_schema()
@@ -168,7 +207,7 @@ class OllamaWebAgent(FlowLauncher):
             message = response.get("message", {})
             tool_calls = message.get("tool_calls") or []
             if not tool_calls:
-                return message.get("content", "")
+                return strip_thinking(message.get("content", ""))
 
             for call in tool_calls:
                 fn = call.get("function", {})
@@ -213,6 +252,16 @@ class OllamaWebAgent(FlowLauncher):
             return self._handle_config(parts[1:])
 
         cfg = self._load_runtime_config()
+        prompt_stop = str(cfg.get("prompt_stop", DEFAULT_CONFIG["prompt_stop"]))
+        if prompt_stop and not query.endswith(prompt_stop):
+            return [
+                format_result(
+                    "Waiting for input end",
+                    f"End your query with {prompt_stop} to run",
+                )
+            ]
+        if prompt_stop and query.endswith(prompt_stop):
+            query = query[: -len(prompt_stop)].rstrip()
         model = cfg.get("model") or DEFAULT_CONFIG["model"]
         if not model:
             return [
@@ -221,16 +270,29 @@ class OllamaWebAgent(FlowLauncher):
                     "Set it in Flow Launcher plugin settings",
                 )
             ]
+        if ollama is None:
+            return [
+                format_result(
+                    "Missing dependency: ollama",
+                    "Install in Flow Python: python -m pip install -r requirements.txt",
+                )
+            ]
 
         start = time.time()
         try:
             answer = self._chat_with_tools(query, cfg)
-        except Exception:
-            return [
-                format_result(
-                    "Ollama connection failed", "Is Ollama running on localhost?"
-                )
-            ]
+        except Exception as exc:
+            message = str(exc).strip()
+            if "model" in message and "not" in message and "found" in message:
+                return [
+                    format_result(
+                        "Model not found",
+                        f"Check model name and run: ollama pull {model}",
+                    )
+                ]
+            if not message:
+                message = "Is Ollama running on localhost?"
+            return [format_result("Ollama error", message[:200])]
 
         elapsed = time.time() - start
         subtitle = f"{elapsed:.1f}s"
