@@ -1,6 +1,7 @@
 import json
 import os
 import sys
+import tempfile
 import time
 from typing import Any, Dict, List
 
@@ -37,6 +38,10 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "max_results": 3,
     "ollama_host": "http://localhost:11434",
     "prompt_stop": ";;",
+    "enable_web_search": False,
+    "show_thinking": False,
+    "response_preview_length": 160,
+    "use_system_proxy": False,
 }
 
 
@@ -130,6 +135,27 @@ def strip_thinking(text: str) -> str:
     return text.strip()
 
 
+def to_bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return False
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def normalize_host(host: str) -> str:
+    if not host:
+        return host
+    lowered = host.lower()
+    if lowered.startswith("http://localhost"):
+        return "http://127.0.0.1" + host[len("http://localhost") :]
+    if lowered.startswith("https://localhost"):
+        return "https://127.0.0.1" + host[len("https://localhost") :]
+    if lowered.startswith("localhost"):
+        return "127.0.0.1" + host[len("localhost") :]
+    return host
+
+
 class OllamaWebAgent(FlowLauncher):
     def _settings_value(self, key: str, fallback: Any) -> Any:
         settings = getattr(self, "settings", {}) or {}
@@ -147,10 +173,28 @@ class OllamaWebAgent(FlowLauncher):
         cfg["ollama_host"] = self._settings_value("ollama_host", cfg["ollama_host"])
         cfg["max_results"] = self._settings_value("max_results", cfg["max_results"])
         cfg["prompt_stop"] = self._settings_value("prompt_stop", cfg["prompt_stop"])
+        cfg["enable_web_search"] = self._settings_value(
+            "enable_web_search", cfg["enable_web_search"]
+        )
+        cfg["show_thinking"] = self._settings_value(
+            "show_thinking", cfg["show_thinking"]
+        )
+        cfg["use_system_proxy"] = self._settings_value(
+            "use_system_proxy", cfg["use_system_proxy"]
+        )
+        cfg["response_preview_length"] = self._settings_value(
+            "response_preview_length", cfg["response_preview_length"]
+        )
         try:
             cfg["max_results"] = max(1, min(3, int(cfg["max_results"])))
         except Exception:
             cfg["max_results"] = DEFAULT_CONFIG["max_results"]
+        try:
+            cfg["response_preview_length"] = max(
+                40, min(500, int(cfg["response_preview_length"]))
+            )
+        except Exception:
+            cfg["response_preview_length"] = DEFAULT_CONFIG["response_preview_length"]
         return cfg
 
     def _handle_config(self, args: List[str]) -> List[Dict[str, Any]]:
@@ -188,26 +232,41 @@ class OllamaWebAgent(FlowLauncher):
             )
         ]
 
-    def _chat_with_tools(self, prompt: str, cfg: Dict[str, Any]) -> str:
+    def _chat_with_tools(
+        self, prompt: str, cfg: Dict[str, Any], use_tools: bool
+    ) -> str:
         if ollama is None:
             raise RuntimeError(f"ollama not available: {OLLAMA_IMPORT_ERROR}")
-        host = str(cfg.get("ollama_host", "")).strip()
-        client = ollama.Client(host=host) if host else ollama.Client()
+        host = normalize_host(str(cfg.get("ollama_host", "")).strip())
+        trust_env = to_bool(cfg.get("use_system_proxy"))
+        client = (
+            ollama.Client(host=host, trust_env=trust_env) if host else ollama.Client()
+        )
         tools = build_tool_schema()
         messages = [
             {
                 "role": "system",
-                "content": "You are a helpful assistant. If a user question needs fresh info, call search_web.",
+                "content": "You are a helpful assistant.",
             },
             {"role": "user", "content": prompt},
         ]
+
+        if not use_tools:
+            response = client.chat(model=cfg["model"], messages=messages)
+            content = response.get("message", {}).get("content", "")
+            if to_bool(cfg.get("show_thinking")):
+                return content
+            return strip_thinking(content)
 
         for _ in range(2):
             response = client.chat(model=cfg["model"], messages=messages, tools=tools)
             message = response.get("message", {})
             tool_calls = message.get("tool_calls") or []
             if not tool_calls:
-                return strip_thinking(message.get("content", ""))
+                content = message.get("content", "")
+                if to_bool(cfg.get("show_thinking")):
+                    return content
+                return strip_thinking(content)
 
             for call in tool_calls:
                 fn = call.get("function", {})
@@ -252,6 +311,7 @@ class OllamaWebAgent(FlowLauncher):
             return self._handle_config(parts[1:])
 
         cfg = self._load_runtime_config()
+        use_tools = to_bool(cfg.get("enable_web_search"))
         prompt_stop = str(cfg.get("prompt_stop", DEFAULT_CONFIG["prompt_stop"]))
         if prompt_stop and not query.endswith(prompt_stop):
             return [
@@ -262,6 +322,13 @@ class OllamaWebAgent(FlowLauncher):
             ]
         if prompt_stop and query.endswith(prompt_stop):
             query = query[: -len(prompt_stop)].rstrip()
+
+        lowered = query.lower()
+        for prefix in ("net ", "web ", "search ", "联网 "):
+            if lowered.startswith(prefix):
+                use_tools = True
+                query = query[len(prefix) :].strip()
+                break
         model = cfg.get("model") or DEFAULT_CONFIG["model"]
         if not model:
             return [
@@ -280,7 +347,7 @@ class OllamaWebAgent(FlowLauncher):
 
         start = time.time()
         try:
-            answer = self._chat_with_tools(query, cfg)
+            answer = self._chat_with_tools(query, cfg, use_tools=use_tools)
         except Exception as exc:
             message = str(exc).strip()
             if "model" in message and "not" in message and "found" in message:
@@ -295,8 +362,44 @@ class OllamaWebAgent(FlowLauncher):
             return [format_result("Ollama error", message[:200])]
 
         elapsed = time.time() - start
-        subtitle = f"{elapsed:.1f}s"
-        return [format_result(answer or "(empty)", subtitle)]
+        preview_len = int(cfg.get("response_preview_length", 160))
+        preview = (answer or "(empty)").strip()
+        title = (
+            preview
+            if len(preview) <= preview_len
+            else preview[:preview_len].rstrip() + "..."
+        )
+        subtitle = f"{elapsed:.1f}s | Press Enter to open full response"
+        return [
+            {
+                "Title": title,
+                "SubTitle": subtitle,
+                "IcoPath": "icon.png",
+                "JsonRPCAction": {
+                    "method": "open_response",
+                    "parameters": [preview],
+                    "dontHideAfterAction": False,
+                },
+            }
+        ]
+
+    def open_response(self, text: str) -> bool:
+        safe_text = text or "(empty)"
+        tmp_dir = tempfile.gettempdir()
+        timestamp = time.strftime("%Y%m%d-%H%M%S")
+        path = os.path.join(tmp_dir, f"ask-ai-response-{timestamp}.txt")
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(safe_text)
+        try:
+            if os.name == "nt":
+                os.startfile(path)
+            else:
+                import subprocess
+
+                subprocess.Popen(["xdg-open", path])
+        except Exception:
+            pass
+        return True
 
 
 if __name__ == "__main__":
