@@ -1,9 +1,9 @@
 {
     "ID": "7c0f4fd6-64b7-4d4e-8d7b-7f6d4b54b0a3",
     "Name": "Ask AI",
-    "Description": "Ollama-powered agent with Tavily search tool",
+    "Description": "Multi-provider AI assistant (Ollama/OpenAI/DeepSeek) with web search and thinking mode",
     "Author": "Bowie",
-    "Version": "0.1.2",
+    "Version": "1.0.0",
     "Language": "python",
     "Website": "https://github.com/BowieHe/ask-ai-plugin",
     "IcoPath": "icon.png",
