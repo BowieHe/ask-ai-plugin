@@ -366,6 +366,9 @@ def load_settings_fallback() -> Dict[str, Any]:
 
 
 class OllamaWebAgent(FlowLauncher):
+    def __init__(self):
+        super().__init__()
+    
     def _load_runtime_config(self) -> Dict[str, Any]:
         """Load configuration from settings with defaults"""
         settings = getattr(self, "settings", {}) or load_settings_fallback()
@@ -728,43 +731,85 @@ class OllamaWebAgent(FlowLauncher):
 
         elapsed = time.time() - start
         preview_len = int(cfg.get("response_preview_length", 160))
-        preview = (answer or "(empty)").strip()
+        
+        # Separate thinking and answer if present
+        thinking = ""
+        answer_only = answer
+        if answer and "[thinking]" in answer and "[answer]" in answer:
+            parts = answer.split("[answer]")
+            thinking = parts[0].replace("[thinking]", "").strip()
+            answer_only = parts[1].strip() if len(parts) > 1 else answer
+        
+        # Show only answer in preview (not thinking)
+        preview = answer_only.strip() if answer_only else "(empty)"
         title = (
             preview
             if len(preview) <= preview_len
             else preview[:preview_len].rstrip() + "..."
         )
         subtitle = self._build_subtitle(elapsed, use_tools, query)
+        
+        # Build full response for display
+        full_response = ""
+        if thinking:
+            full_response = f"[thinking]\n{thinking}\n\n[answer]\n{answer_only}"
+        else:
+            full_response = answer_only
+        
+        # Return TWO results: one for copy, one for open in text file
         return [
             {
-                "Title": title,
+                "Title": f"📋 {title}",
                 "SubTitle": subtitle,
                 "IcoPath": "icon.png",
                 "JsonRPCAction": {
-                    "method": "open_response",
-                    "parameters": [preview],
+                    "method": "copy_answer",
+                    "parameters": [answer_only],
+                    "dontHideAfterAction": False,
+                },
+            },
+            {
+                "Title": "📄 Open Full Response in Text Editor",
+                "SubTitle": f"View complete response ({len(full_response)} chars)" + (" with thinking process" if thinking else ""),
+                "IcoPath": "icon.png",
+                "JsonRPCAction": {
+                    "method": "open_in_text_file",
+                    "parameters": [full_response],
                     "dontHideAfterAction": False,
                 },
             }
         ]
+    
+    def copy_answer(self, answer: str) -> List[Dict[str, Any]]:
+        """Copy answer to clipboard"""
+        try:
+            from flowlauncher import FlowLauncherAPI
+            FlowLauncherAPI.copy_to_clipboard(answer, show_notification=False)
+        except Exception as e:
+            print(f"Error copying: {e}", file=sys.stderr)
+        return []
 
-    def open_response(self, text: str) -> bool:
+    def open_response(self, text: str = "") -> List[Dict[str, Any]]:
+        """Display full response - kept for backward compatibility"""
+        return []
+    
+    def open_in_text_file(self, text: str) -> List[Dict[str, Any]]:
+        """Open text in a temporary text file"""
         safe_text = text or "(empty)"
         tmp_dir = tempfile.gettempdir()
         timestamp = time.strftime("%Y%m%d-%H%M%S")
         path = os.path.join(tmp_dir, f"ask-ai-response-{timestamp}.txt")
-        with open(path, "w", encoding="utf-8") as f:
-            f.write(safe_text)
         try:
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(safe_text)
             if os.name == "nt":
                 os.startfile(path)
             else:
                 import subprocess
-
                 subprocess.Popen(["xdg-open", path])
-        except Exception:
-            pass
-        return True
+        except Exception as e:
+            print(f"Error opening file: {e}", file=sys.stderr)
+        return []
 
     def _build_subtitle(self, elapsed: float, use_tools: bool, query: str) -> str:
         label = ""
@@ -773,7 +818,7 @@ class OllamaWebAgent(FlowLauncher):
         parts = [f"{elapsed:.1f}s"]
         if label:
             parts.append(label)
-        parts.append("Press Enter to open full response")
+        parts.append("Enter to Copy/Open")
         return " | ".join(parts)
 
     def _is_chinese(self, text: str) -> bool:

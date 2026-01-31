@@ -93,3 +93,12 @@ class FlowLauncherAPI:
         print(dumps({
             "method": "Flow.Launcher.ReloadPlugins",
             "parameters": []}))
+    
+    @classmethod
+    def copy_to_clipboard(cls, text: str, show_notification: bool = False):
+        """
+        copy text to clipboard
+        """
+        print(dumps({
+            "method": "Flow.Launcher.CopyToClipboard",
+            "parameters": [text, False, show_notification]}))
