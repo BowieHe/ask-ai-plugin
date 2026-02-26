@@ -3,10 +3,11 @@
     "Name": "Ask AI",
     "Description": "Multi-provider AI assistant (Ollama/OpenAI/DeepSeek) with web search and thinking mode",
     "Author": "Bowie",
-    "Version": "1.0.0",
+    "Version": "1.1.1",
     "Language": "python",
     "Website": "https://github.com/BowieHe/ask-ai-plugin",
     "IcoPath": "icon.png",
     "ExecuteFileName": "main.py",
-    "ActionKeyword": "ai"
+    "ActionKeyword": "ai",
+    "RequiredPluginVersion": "1.1.0"
 }
